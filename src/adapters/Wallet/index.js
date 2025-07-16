@@ -5,7 +5,7 @@ const config = require('../../../configuration/config.json');
 const common = require('../../../configuration/common');
 const schemaValidator = require('../../../configuration/schemaValidator');
 const { initialiseWeb3 } = require('../../../configuration/intialiseWeb3');
-const { ethers } = require('ethers-5');
+const { ethers ,verifyAuthorization} = require('ethers');
 
 class Wallet {
 
@@ -13,6 +13,73 @@ class Wallet {
         this.privateKey = options.privateKey;
         this.xApiKey = options.xApiKey;
     };
+
+    initWalletEVM = async(options) => {
+        axios.defaults.headers['X-API-KEY'] = this.xApiKey;
+        const apiURL = `${config.url.apiurl}/chain/getpublicrpc/`;
+
+        const chainId = await common.getChainId({ chainId: options.chainId});
+
+        const configuration = { "params": {} };
+        configuration.params = {
+            chainId
+        };
+
+        let rpc = await axios.get(apiURL, configuration);
+        rpc = rpc.data.data.rpc;
+        this.provider = new ethers.JsonRpcProvider(rpc);
+        this.signer = new ethers.Wallet(this.privateKey, this.provider);
+    }
+
+    getAddressEVM = () => {
+        if (!this.signer) {
+            return "Signer not initialized. Please call initWallet() first.";
+        }
+        return this.signer.address;
+    }
+
+    signTransactionEIP7702 = async (transactionObject) => {
+        try {
+            if (!this.signer) throw new Error("Signer not initialized. Please call initWalletEVM() first.");
+            const nonce = await this.signer.getNonce();
+            const authReq = await this.signer.populateAuthorization({
+                address: transactionObject.authContract,
+                nonce: nonce + 1, // Increment nonce for authorization
+                chainId: transactionObject.chainId,
+            });
+            const auth    = this.signer.authorizeSync(authReq);
+
+            if (verifyAuthorization(authReq, auth.signature) !== this.signer.address) {
+                throw new Error("-------- unsuccessful authorization");
+            }
+            const authList = [ethers.authorizationify(auth)];
+
+            const tx = {
+                type: 0x04,
+                from: this.signer.from,
+                to: transactionObject.to,
+                data: transactionObject.data,
+                gasLimit: "500000", // for now we have hardcoded the gas limit
+                maxFeePerGas: "460423",
+                maxPriorityFeePerGas: "459998",
+                chainId: transactionObject.chainId,
+                nonce: nonce,
+                value: transactionObject.value || '0',
+                authorizationList:     authList,
+            };
+
+            const signedTx = await this.signer.signTransaction(tx);
+            return {
+                "rawTransaction": signedTx,
+                chainId: transactionObject.chainId,
+            };
+        } catch (error) {
+            console.error("signTransactionEIP7702", error);
+            return error;
+        }
+
+    }
+
 
     signTransaction = async (transactionObject) => {
 
